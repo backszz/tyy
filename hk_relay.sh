@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# 香港中转服务器一键部署脚本（最终修复版）
-# 完全修复IP获取问题，确保所有工具安装
+# 香港CN2中转服务器一键部署脚本 (终极版)
+# 确保部署后服务正常可用
 
 echo "=========================================="
-echo " 香港中转服务器部署脚本 - 最终修复版 "
+echo " 香港CN2中转服务器部署脚本 - 终极版 "
 echo "=========================================="
 echo "正在安装必要组件..."
 
@@ -15,7 +15,7 @@ sed -i 's|security.debian.org|mirrors.aliyun.com/debian-security|g' /etc/apt/sou
 apt update
 apt install -y --no-install-recommends \
     curl wget openssl uuid-runtime ca-certificates net-tools \
-    iproute2 iptables unzip jq iptables-persistent netcat
+    iproute2 iptables unzip jq iptables-persistent netcat qrencode
 
 # 输入后端服务器信息
 echo ""
@@ -26,10 +26,10 @@ TARGET_DOMAIN="www.qq.com"  # SNI域名
 
 # 获取配置信息
 echo ""
-echo "正在获取配置信息..."
-UUID="72505435-4bd8-4eb4-9a63-04a818e57d43"
-PUBLIC_KEY="cujdBC0t8jmfzUNwdCtCZhk3UBML_RWeN1vUq-dWyDM"
-SHORT_ID="4384eb8ebcc40a60"
+echo "请从天翼云服务器获取以下配置信息并输入:"
+read -p "请输入天翼云服务器的UUID: " UUID
+read -p "请输入天翼云服务器的Public Key: " PUBLIC_KEY
+read -p "请输入天翼云服务器的Short ID: " SHORT_ID
 
 # 配置NAT转发
 echo ""
@@ -53,33 +53,26 @@ sysctl -p >/dev/null 2>&1
 netfilter-persistent save >/dev/null 2>&1
 netfilter-persistent reload >/dev/null 2>&1
 
-# 正确获取香港服务器公网IP
-echo "获取香港服务器公网IP..."
-IP_SERVICES=(
-    "ipinfo.io/ip"
-    "ifconfig.co"
-    "icanhazip.com"
-    "api.ipify.org"
-    "ip.seeip.org"
-)
-
-for service in "${IP_SERVICES[@]}"; do
-    PUBLIC_IP=$(curl -4s --connect-timeout 3 "$service")
-    if [[ $PUBLIC_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$PUBLIC_IP" != "$BACKEND_IP" ]; then
-        break
-    fi
-    sleep 1
-done
-
-# 如果仍然失败，使用最后一招
-if [[ ! $PUBLIC_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    PUBLIC_IP=$(curl -4s http://whatismyip.akamai.com/)
-fi
-
-# 确保IP不是后端IP
-if [ "$PUBLIC_IP" == "$BACKEND_IP" ] || [ -z "$PUBLIC_IP" ]; then
-    PUBLIC_IP=$(hostname -I | awk '{print $1}')
-fi
+# 获取公网IP（香港服务器）
+get_public_ip() {
+    local services=(
+        "ipinfo.io/ip"
+        "ifconfig.me"
+        "icanhazip.com"
+        "api.ipify.org"
+        "ip.seeip.org"
+        "whatismyip.akamai.com"
+    )
+    for service in "${services[@]}"; do
+        ip=$(curl -4s --connect-timeout 3 "$service")
+        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "$ip"
+            return 0
+        fi
+    done
+    echo "无法获取公网IP"
+}
+PUBLIC_IP=$(get_public_ip)
 
 # 输出部署信息
 clear
@@ -110,6 +103,23 @@ echo " 测试连接: nc -zv $BACKEND_IP $BACKEND_PORT"
 echo " 重启转发: netfilter-persistent reload"
 echo "=========================================================="
 
+# 保存客户端配置到文件
+cat > client_config.txt <<EOF
+香港中转服务器配置:
+------------------------------
+地址: $PUBLIC_IP
+端口: $LOCAL_PORT
+用户ID: $UUID
+流控: xtls-rprx-vision
+TLS类型: reality
+Public Key: $PUBLIC_KEY
+Short ID: $SHORT_ID
+SNI: $TARGET_DOMAIN
+------------------------------
+EOF
+
+echo "客户端配置已保存到: client_config.txt"
+
 # 生成二维码
 echo "生成二维码配置..."
 cat > client_config.json <<EOF
@@ -135,12 +145,6 @@ cat > client_config.json <<EOF
 }
 EOF
 
-# 安装qrencode并生成二维码
-if ! command -v qrencode &> /dev/null; then
-    echo "正在安装qrencode..."
-    apt install -y qrencode
-fi
-
 echo ""
 echo "二维码配置:"
 qrencode -t ANSIUTF8 -l H < client_config.json
@@ -157,13 +161,11 @@ echo "正在测试后端服务器连接..."
 if timeout 5 nc -zv $BACKEND_IP $BACKEND_PORT; then
     echo "连接测试成功!"
 else
-    echo "连接测试失败!"
-    echo "请检查:"
+    echo "连接测试失败! 请检查:"
     echo "1. 天翼云服务器是否运行正常"
     echo "2. 天翼云安全组是否开放 $BACKEND_PORT 端口"
     echo "3. 天翼云本地防火墙设置"
     echo ""
-    echo "快速诊断:"
-    echo "  在天翼云服务器执行: nc -lvvp $BACKEND_PORT"
-    echo "  然后在香港服务器执行: nc -zv $BACKEND_IP $BACKEND_PORT"
+    echo "在香港服务器上执行以下命令测试:"
+    echo "   nc -zv $BACKEND_IP $BACKEND_PORT"
 fi
