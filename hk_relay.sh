@@ -1,13 +1,12 @@
 #!/bin/bash
 
 # 香港中转服务器一键部署脚本（最终修复版）
-# 监听8443端口，转发到天翼云服务器的8443端口
-# 完全修复IP显示问题，移除ufw依赖，优化错误处理
+# 完全修复IP获取问题，确保所有工具安装
 
 echo "=========================================="
-echo " 香港中转服务器部署脚本 - 最终版 "
+echo " 香港中转服务器部署脚本 - 最终修复版 "
 echo "=========================================="
-echo "正在更新系统并安装必要组件..."
+echo "正在安装必要组件..."
 
 # 使用阿里云镜像源加速
 sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list
@@ -16,7 +15,7 @@ sed -i 's|security.debian.org|mirrors.aliyun.com/debian-security|g' /etc/apt/sou
 apt update
 apt install -y --no-install-recommends \
     curl wget openssl uuid-runtime ca-certificates net-tools \
-    iproute2 iptables unzip jq iptables-persistent
+    iproute2 iptables unzip jq iptables-persistent netcat
 
 # 输入后端服务器信息
 echo ""
@@ -25,40 +24,12 @@ BACKEND_PORT="8443"  # 使用8443端口
 LOCAL_PORT="8443"    # 本地监听8443端口
 TARGET_DOMAIN="www.qq.com"  # SNI域名
 
-# 从天翼云服务器获取配置信息
+# 获取配置信息
 echo ""
-echo "正在从天翼云服务器获取配置信息..."
-UUID=""
-PUBLIC_KEY=""
-SHORT_ID=""
-
-# 尝试从服务器获取信息
-if command -v ssh >/dev/null 2>&1; then
-    for i in {1..2}; do
-        echo "尝试 $i/2 获取配置..."
-        
-        # 尝试通过SSH获取配置信息
-        CONFIG_INFO=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@$BACKEND_IP \
-            "grep -E 'id|publicKey|shortIds' /usr/local/etc/xray/config.json 2>/dev/null" 2>/dev/null)
-        
-        if [ $? -eq 0 ] && [ -n "$CONFIG_INFO" ]; then
-            UUID=$(echo "$CONFIG_INFO" | grep '"id"' | awk -F'"' '{print $4}')
-            PUBLIC_KEY=$(echo "$CONFIG_INFO" | grep '"publicKey"' | awk -F'"' '{print $4}')
-            SHORT_ID=$(echo "$CONFIG_INFO" | grep '"shortIds"' | awk -F'[' '{print $2}' | awk -F']' '{print $1}' | tr -d '" ')
-            break
-        else
-            sleep 2
-        fi
-    done
-fi
-
-# 如果自动获取失败，提示手动输入
-if [ -z "$UUID" ] || [ -z "$PUBLIC_KEY" ] || [ -z "$SHORT_ID" ]; then
-    echo "警告：无法自动获取配置信息，请手动输入"
-    read -p "请输入天翼云服务器的UUID: " UUID
-    read -p "请输入天翼云服务器的Public Key: " PUBLIC_KEY
-    read -p "请输入天翼云服务器的Short ID: " SHORT_ID
-fi
+echo "正在获取配置信息..."
+UUID="72505435-4bd8-4eb4-9a63-04a818e57d43"
+PUBLIC_KEY="cujdBC0t8jmfzUNwdCtCZhk3UBML_RWeN1vUq-dWyDM"
+SHORT_ID="4384eb8ebcc40a60"
 
 # 配置NAT转发
 echo ""
@@ -82,46 +53,33 @@ sysctl -p >/dev/null 2>&1
 netfilter-persistent save >/dev/null 2>&1
 netfilter-persistent reload >/dev/null 2>&1
 
-# 获取服务器公网IP (多种方法尝试)
-get_public_ip() {
-    local ips=()
-    local services=(
-        "ipinfo.io/ip"
-        "ifconfig.me"
-        "icanhazip.com"
-        "api.ipify.org"
-        "ip.seeip.org"
-    )
-    
-    # 尝试多个服务
-    for service in "${services[@]}"; do
-        ip=$(curl -4s --connect-timeout 3 "$service" 2>/dev/null)
-        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            ips+=("$ip")
-            # 如果已经收集到3个相同的IP，直接返回
-            if [ "$(printf '%s\n' "${ips[@]}" | grep -c "$ip")" -ge 3 ]; then
-                echo "$ip"
-                return 0
-            fi
-        fi
-    done
-    
-    # 返回最常见的IP
-    if [ "${#ips[@]}" -gt 0 ]; then
-        printf '%s\n' "${ips[@]}" | sort | uniq -c | sort -nr | head -1 | awk '{print $2}'
-        return 0
-    fi
-    
-    # 最后尝试本地IP
-    local local_ip=$(hostname -I | awk '{print $1}')
-    if [[ "$local_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        echo "$local_ip"
-    else
-        echo "无法获取公网IP"
-    fi
-}
+# 正确获取香港服务器公网IP
+echo "获取香港服务器公网IP..."
+IP_SERVICES=(
+    "ipinfo.io/ip"
+    "ifconfig.co"
+    "icanhazip.com"
+    "api.ipify.org"
+    "ip.seeip.org"
+)
 
-PUBLIC_IP=$(get_public_ip)
+for service in "${IP_SERVICES[@]}"; do
+    PUBLIC_IP=$(curl -4s --connect-timeout 3 "$service")
+    if [[ $PUBLIC_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$PUBLIC_IP" != "$BACKEND_IP" ]; then
+        break
+    fi
+    sleep 1
+done
+
+# 如果仍然失败，使用最后一招
+if [[ ! $PUBLIC_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    PUBLIC_IP=$(curl -4s http://whatismyip.akamai.com/)
+fi
+
+# 确保IP不是后端IP
+if [ "$PUBLIC_IP" == "$BACKEND_IP" ] || [ -z "$PUBLIC_IP" ]; then
+    PUBLIC_IP=$(hostname -I | awk '{print $1}')
+fi
 
 # 输出部署信息
 clear
@@ -129,9 +87,9 @@ echo "=========================================================="
 echo "                 香港中转服务器部署完成                     "
 echo "                  监听端口: $LOCAL_PORT                     "
 echo "=========================================================="
-echo " 服务器IP  : $PUBLIC_IP"
-echo " 监听端口  : $LOCAL_PORT"
-echo " 目标服务器: $BACKEND_IP:$BACKEND_PORT"
+echo " 香港服务器IP: $PUBLIC_IP"
+echo " 监听端口   : $LOCAL_PORT"
+echo " 目标服务器 : $BACKEND_IP:$BACKEND_PORT"
 echo "----------------------------------------------------------"
 echo " 客户端配置:"
 echo ""
@@ -152,33 +110,60 @@ echo " 测试连接: nc -zv $BACKEND_IP $BACKEND_PORT"
 echo " 重启转发: netfilter-persistent reload"
 echo "=========================================================="
 
-# 保存客户端配置到文件
-cat > client_config.txt <<EOF
-香港中转服务器配置:
-------------------------------
-地址: $PUBLIC_IP
-端口: $LOCAL_PORT
-用户ID: $UUID
-流控: xtls-rprx-vision
-TLS类型: reality
-Public Key: $PUBLIC_KEY
-Short ID: $SHORT_ID
-SNI: $TARGET_DOMAIN
-------------------------------
+# 生成二维码
+echo "生成二维码配置..."
+cat > client_config.json <<EOF
+{
+  "v": "2",
+  "ps": "香港中转节点",
+  "add": "$PUBLIC_IP",
+  "port": "$LOCAL_PORT",
+  "id": "$UUID",
+  "aid": "0",
+  "scy": "auto",
+  "net": "tcp",
+  "type": "none",
+  "host": "",
+  "path": "",
+  "tls": "reality",
+  "sni": "$TARGET_DOMAIN",
+  "alpn": "",
+  "fp": "chrome",
+  "pbk": "$PUBLIC_KEY",
+  "sid": "$SHORT_ID",
+  "flow": "xtls-rprx-vision"
+}
 EOF
 
-echo "客户端配置已保存到: client_config.txt"
+# 安装qrencode并生成二维码
+if ! command -v qrencode &> /dev/null; then
+    echo "正在安装qrencode..."
+    apt install -y qrencode
+fi
+
+echo ""
+echo "二维码配置:"
+qrencode -t ANSIUTF8 -l H < client_config.json
+echo ""
+
+# 生成分享链接
+SHARE_LINK="vless://$UUID@$PUBLIC_IP:$LOCAL_PORT?security=reality&encryption=none&pbk=$PUBLIC_KEY&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=$TARGET_DOMAIN&sid=$SHORT_ID#香港中转节点"
+echo "分享链接:"
+echo "$SHARE_LINK"
+echo "=========================================================="
 
 # 测试后端服务器连接
-echo ""
 echo "正在测试后端服务器连接..."
-CONNECTION_RESULT=$(timeout 5 nc -zv $BACKEND_IP $BACKEND_PORT 2>&1)
-if [ $? -eq 0 ]; then
-    echo "连接测试成功: $CONNECTION_RESULT"
+if timeout 5 nc -zv $BACKEND_IP $BACKEND_PORT; then
+    echo "连接测试成功!"
 else
-    echo "连接测试失败: $CONNECTION_RESULT"
+    echo "连接测试失败!"
     echo "请检查:"
     echo "1. 天翼云服务器是否运行正常"
     echo "2. 天翼云安全组是否开放 $BACKEND_PORT 端口"
     echo "3. 天翼云本地防火墙设置"
+    echo ""
+    echo "快速诊断:"
+    echo "  在天翼云服务器执行: nc -lvvp $BACKEND_PORT"
+    echo "  然后在香港服务器执行: nc -zv $BACKEND_IP $BACKEND_PORT"
 fi
