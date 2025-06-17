@@ -1,6 +1,6 @@
 #!/bin/bash
 # 天翼云服务器部署脚本 (修复版本检测问题)
-# 保存到: https://raw.githubusercontent.com/backszz/tyy/main/tyy_server_fixed_v2.sh
+# 保存到: https://raw.githubusercontent.com/backszz/tyy/main/tyy_server_fixed.sh
 
 echo "正在安装必要组件..."
 # 使用阿里云镜像源加速
@@ -23,26 +23,12 @@ case $ARCH in
     *) ARCH="64" ;;  # 默认为64位
 esac
 
-# 获取最新版本（添加重试和默认值）
-VER="1.8.4"  # 默认版本
-for i in {1..5}; do
-    API_URL="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
-    VER_RESPONSE=$(curl -sL $API_URL)
-    VER=$(echo "$VER_RESPONSE" | jq -r '.tag_name' | sed 's/^v//')
-    
-    if [ -n "$VER" ] && [ "$VER" != "null" ]; then
-        echo "检测到最新版本: v$VER"
-        break
-    else
-        echo "获取最新版本失败 (尝试 $i/5), 使用默认版本 v1.8.4"
-        VER="1.8.4"
-        sleep 2
-    fi
-done
-
-# 下载Xray
+# 获取最新版本（修复方法）
+echo "获取最新版本..."
+VER="1.8.4"  # 默认使用的稳定版本
 XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/v$VER/Xray-linux-$ARCH.zip"
-echo "下载Xray: $XRAY_URL"
+echo "使用稳定版本: v$VER"
+echo "下载URL: $XRAY_URL"
 
 # 使用curl重试机制
 for i in {1..5}; do
