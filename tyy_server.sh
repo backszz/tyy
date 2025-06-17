@@ -1,10 +1,11 @@
 #!/bin/bash
 
-# 天翼云后端服务器一键部署脚本（使用 8443 端口）
-# 保存到：https://raw.githubusercontent.com/backszz/tyy/main/tyy_server_8443.sh
+# 天翼云后端服务器一键部署脚本 (最终版)
+# 使用8443端口，确保无错误
+# 保存到：https://raw.githubusercontent.com/backszz/tyy/main/tyy_server_final.sh
 
 echo "=========================================="
-echo " 天翼云服务器部署脚本 - 使用 8443 端口 "
+echo " 天翼云服务器部署脚本 - 最终版 "
 echo "=========================================="
 echo "正在安装必要组件..."
 
@@ -14,11 +15,11 @@ sed -i 's|security.debian.org|mirrors.aliyun.com/debian-security|g' /etc/apt/sou
 
 apt update
 apt install -y --no-install-recommends \
-    curl openssl uuid-runtime ca-certificates net-tools \
-    iproute2 iptables unzip jq
+    curl wget openssl uuid-runtime ca-certificates net-tools \
+    iproute2 iptables unzip jq iptables-persistent
 
 # 下载 Xray 核心 (固定版本 1.8.4)
-echo "手动下载Xray核心..."
+echo "下载Xray核心..."
 ARCH=$(uname -m)
 case $ARCH in
     "x86_64") ARCH="64" ;;
@@ -79,7 +80,7 @@ PUBLIC_KEY=$(echo "$XRAY_KEY" | grep 'Public key' | awk '{print $3}')
 UUID=$(/usr/local/bin/xray uuid)
 SHORT_ID=$(openssl rand -hex 8 | head -c 16)
 
-# 配置参数（使用8443端口）
+# 配置参数
 TARGET_DOMAIN="www.qq.com"  # 伪装目标网站
 SERVER_PORT="8443"          # 使用8443端口
 
@@ -131,31 +132,32 @@ touch /var/log/xray/access.log
 touch /var/log/xray/error.log
 
 # 优化内核参数
-echo "优化网络配置..."
+echo "优化内核参数..."
 cat >> /etc/sysctl.conf <<EOF
 net.ipv4.tcp_fastopen = 3
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 net.core.rmem_max = 2500000
 net.core.wmem_max = 2500000
+net.ipv4.ip_forward = 1
 EOF
 sysctl -p
 
-# 配置防火墙(UFW)，开放8443端口
+# 配置防火墙
 echo "配置防火墙..."
-ufw --force reset
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow $SERVER_PORT/tcp
-ufw allow $SERVER_PORT/udp
-echo "y" | ufw enable >/dev/null 2>&1
+iptables -F
+iptables -X
+iptables -P INPUT ACCEPT
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+iptables -A INPUT -p tcp --dport $SERVER_PORT -j ACCEPT
+iptables -A INPUT -p udp --dport $SERVER_PORT -j ACCEPT
+netfilter-persistent save
 
 # 启动服务
 echo "启动Xray服务..."
 systemctl daemon-reload
 systemctl enable --now xray >/dev/null 2>&1
-
-# 等待2秒让服务启动
 sleep 2
 
 # 检查服务状态
@@ -165,14 +167,33 @@ if [ "$XRAY_STATUS" != "active" ]; then
     exit 1
 fi
 
+# 获取公网IP
+get_public_ip() {
+    local services=(
+        "ipinfo.io/ip"
+        "ifconfig.me"
+        "icanhazip.com"
+        "api.ipify.org"
+        "ip.seeip.org"
+    )
+    for service in "${services[@]}"; do
+        ip=$(curl -4s --connect-timeout 3 "$service")
+        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "$ip"
+            return 0
+        fi
+    done
+    echo "无法获取公网IP"
+}
+PUBLIC_IP=$(get_public_ip)
+
 # 输出配置信息
 clear
 echo "=========================================================="
 echo "                 天翼云服务器部署完成                     "
-echo "                  使用端口: 8443                         "
+echo "                  使用端口: $SERVER_PORT                     "
 echo "=========================================================="
-echo " 服务器状态: $XRAY_STATUS"
-echo " 服务器IP  : $(curl -4s ifconfig.co)"
+echo " 服务器IP  : $PUBLIC_IP"
 echo " 端口      : $SERVER_PORT"
 echo "----------------------------------------------------------"
 echo " UUID      : $UUID"
@@ -182,8 +203,7 @@ echo " 伪装目标  : $TARGET_DOMAIN"
 echo "=========================================================="
 echo " 客户端配置:"
 echo ""
-echo " 类型: vless"
-echo " 地址: [天翼云服务器IP]"
+echo " 地址: $PUBLIC_IP"
 echo " 端口: $SERVER_PORT"
 echo " 用户ID: $UUID"
 echo " 流控: xtls-rprx-vision"
@@ -193,8 +213,26 @@ echo " Short ID: $SHORT_ID"
 echo " SNI: $TARGET_DOMAIN"
 echo ""
 echo "=========================================================="
-echo " 防火墙状态: $(ufw status | head -1)"
-echo " 本地测试: nc -zv 127.0.0.1 $SERVER_PORT"
+echo " 防火墙状态:"
+iptables -L -n -v
+echo " 测试本地连接: nc -zv 127.0.0.1 $SERVER_PORT"
 echo " 查看日志: journalctl -u xray -f"
 echo " 重启服务: systemctl restart xray"
+echo " 安全组: 确保开放 $SERVER_PORT 端口 TCP/UDP"
 echo "=========================================================="
+
+# 保存配置到文件
+cat > server_config.txt <<EOF
+天翼云服务器配置:
+------------------------------
+地址: $PUBLIC_IP
+端口: $SERVER_PORT
+用户ID: $UUID
+流控: xtls-rprx-vision
+TLS类型: reality
+Public Key: $PUBLIC_KEY
+Short ID: $SHORT_ID
+SNI: $TARGET_DOMAIN
+------------------------------
+EOF
+echo "配置已保存到服务器: server_config.txt"
