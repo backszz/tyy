@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# 香港CN2中转服务器一键部署脚本 (终极版)
+# 香港CN2中转服务器一键部署脚本 (终极修复版)
 # 确保部署后服务正常可用
 
 echo "=========================================="
-echo " 香港CN2中转服务器部署脚本 - 终极版 "
+echo " 香港CN2中转服务器部署脚本 - 终极修复版 "
 echo "=========================================="
 echo "正在安装必要组件..."
 
@@ -13,9 +13,10 @@ sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list
 sed -i 's|security.debian.org|mirrors.aliyun.com/debian-security|g' /etc/apt/sources.list
 
 apt update
+echo "安装核心依赖包..."
 apt install -y --no-install-recommends \
     curl wget openssl uuid-runtime ca-certificates net-tools \
-    iproute2 iptables unzip jq iptables-persistent netcat qrencode
+    iproute2 iptables unzip jq iptables-persistent netcat-openbsd qrencode
 
 # 输入后端服务器信息
 echo ""
@@ -54,25 +55,29 @@ netfilter-persistent save >/dev/null 2>&1
 netfilter-persistent reload >/dev/null 2>&1
 
 # 获取公网IP（香港服务器）
-get_public_ip() {
-    local services=(
-        "ipinfo.io/ip"
-        "ifconfig.me"
-        "icanhazip.com"
-        "api.ipify.org"
-        "ip.seeip.org"
-        "whatismyip.akamai.com"
-    )
-    for service in "${services[@]}"; do
-        ip=$(curl -4s --connect-timeout 3 "$service")
-        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "$ip"
-            return 0
-        fi
-    done
-    echo "无法获取公网IP"
-}
-PUBLIC_IP=$(get_public_ip)
+echo "获取香港服务器公网IP..."
+IP_SERVICES=(
+    "ipinfo.io/ip"
+    "ifconfig.me"
+    "icanhazip.com"
+    "api.ipify.org"
+    "ip.seeip.org"
+    "whatismyip.akamai.com"
+)
+
+# 尝试多个服务获取公网IP
+for service in "${IP_SERVICES[@]}"; do
+    PUBLIC_IP=$(curl -4s --connect-timeout 3 "$service")
+    if [[ $PUBLIC_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        break
+    fi
+    sleep 1
+done
+
+# 如果获取失败，使用默认方法
+if [[ ! $PUBLIC_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    PUBLIC_IP=$(hostname -I | awk '{print $1}')
+fi
 
 # 输出部署信息
 clear
@@ -158,14 +163,27 @@ echo "=========================================================="
 
 # 测试后端服务器连接
 echo "正在测试后端服务器连接..."
-if timeout 5 nc -zv $BACKEND_IP $BACKEND_PORT; then
-    echo "连接测试成功!"
+echo "测试命令: nc -zv $BACKEND_IP $BACKEND_PORT"
+if command -v nc &> /dev/null; then
+    if nc -zv $BACKEND_IP $BACKEND_PORT; then
+        echo "连接测试成功!"
+    else
+        echo "连接测试失败!"
+    fi
 else
-    echo "连接测试失败! 请检查:"
-    echo "1. 天翼云服务器是否运行正常"
-    echo "2. 天翼云安全组是否开放 $BACKEND_PORT 端口"
-    echo "3. 天翼云本地防火墙设置"
-    echo ""
-    echo "在香港服务器上执行以下命令测试:"
-    echo "   nc -zv $BACKEND_IP $BACKEND_PORT"
+    echo "警告: nc 命令未安装，无法执行连接测试"
 fi
+
+# 补充诊断信息
+echo ""
+echo "补充诊断信息:"
+echo "1. 验证网络连通性: ping -c 4 $BACKEND_IP"
+ping -c 4 $BACKEND_IP
+echo ""
+echo "2. 验证端口连通性: timeout 3 telnet $BACKEND_IP $BACKEND_PORT"
+timeout 3 telnet $BACKEND_IP $BACKEND_PORT
+echo ""
+echo "3. 验证转发规则状态:"
+echo "   net.ipv4.ip_forward = $(sysctl -n net.ipv4.ip_forward)"
+echo "   iptables规则:"
+iptables -t nat -L -n -v
