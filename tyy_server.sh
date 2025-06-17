@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# 天翼云服务器一键部署脚本 (Nginx反代版)
-# 使用Nginx监听443端口，转发到本地的8443
+# 天翼云服务器一键部署脚本 (8446端口版)
+# 使用8446端口避免国内443端口限制
 
 echo "=========================================="
-echo " 天翼云服务器部署脚本 - Nginx反代版 "
+echo " 天翼云服务器部署脚本 - 8446端口版 "
 echo "=========================================="
 echo "正在安装必要组件..."
 
@@ -13,9 +13,10 @@ sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list
 sed -i 's|security.debian.org|mirrors.aliyun.com/debian-security|g' /etc/apt/sources.list
 
 apt update
+echo "安装Nginx-extras（包含stream模块）..."
 apt install -y --no-install-recommends \
     curl wget openssl uuid-runtime ca-certificates net-tools \
-    iproute2 iptables unzip jq iptables-persistent netcat-openbsd nginx
+    iproute2 iptables unzip jq iptables-persistent netcat-openbsd nginx-extras
 
 # 下载 Xray 核心 (固定版本 1.8.4)
 echo "下载Xray核心..."
@@ -82,7 +83,7 @@ SHORT_ID=$(openssl rand -hex 8 | head -c 16)
 # 配置参数
 TARGET_DOMAIN="www.qq.com"  # 伪装目标网站
 SERVER_PORT="8443"          # 本地监听8443端口
-PUBLIC_PORT="443"           # Nginx对外监听443端口
+PUBLIC_PORT="8446"          # Nginx对外监听8446端口（避开443限制）
 
 # 创建配置文件和目录
 echo "创建配置文件..."
@@ -133,16 +134,28 @@ touch /var/log/xray/error.log
 
 # 配置Nginx反向代理
 echo "配置Nginx反向代理..."
-cat > /etc/nginx/conf.d/reverse-proxy.conf <<EOF
+# 创建专门的反代配置文件
+cat > /etc/nginx/conf.d/xray-proxy.conf <<EOF
+events {
+    worker_connections 1024;
+}
+
 stream {
     server {
-        listen $PUBLIC_PORT;
+        listen $PUBLIC_PORT reuseport;
         proxy_pass 127.0.0.1:$SERVER_PORT;
         proxy_timeout 600s;
         proxy_connect_timeout 10s;
+        proxy_buffer_size 16k;
     }
 }
 EOF
+
+# 确保nginx.conf包含stream配置
+if ! grep -q "stream {" /etc/nginx/nginx.conf; then
+    sed -i '/http {/i # 加载stream模块\nstream {' /etc/nginx/nginx.conf
+    sed -i '/http {/a }' /etc/nginx/nginx.conf
+fi
 
 # 优化内核参数
 echo "优化内核参数..."
@@ -171,20 +184,12 @@ netfilter-persistent save
 echo "启动服务..."
 systemctl daemon-reload
 systemctl enable --now xray >/dev/null 2>&1
-systemctl enable --now nginx >/dev/null 2>&1
+systemctl restart nginx >/dev/null 2>&1
 sleep 2
 
 # 检查服务状态
 XRAY_STATUS=$(systemctl is-active xray)
 NGINX_STATUS=$(systemctl is-active nginx)
-
-if [ "$XRAY_STATUS" != "active" ]; then
-    echo "Xray服务启动失败，查看日志: journalctl -u xray"
-fi
-
-if [ "$NGINX_STATUS" != "active" ]; then
-    echo "Nginx服务启动失败，查看日志: journalctl -u nginx"
-fi
 
 # 获取公网IP
 get_public_ip() {
@@ -232,13 +237,14 @@ echo " Short ID: $SHORT_ID"
 echo " SNI: $TARGET_DOMAIN"
 echo ""
 echo "=========================================================="
+echo " 关键服务状态:"
+echo " Xray状态: $XRAY_STATUS"
+echo " Nginx状态: $NGINX_STATUS"
 echo " 防火墙状态:"
-iptables -L -n -v
+iptables -L -n -v | head -n 15
 echo " 测试本地连接: nc -zv 127.0.0.1 $SERVER_PORT"
 echo " 测试Nginx连接: nc -zv 127.0.0.1 $PUBLIC_PORT"
-echo " 查看Xray日志: journalctl -u xray -f"
-echo " 查看Nginx日志: journalctl -u nginx -f"
-echo " 安全组: 确保开放 $PUBLIC_PORT 端口 TCP/UDP"
+echo " 安全组: 确保开放 $PUBLIC_PORT 端口 TCP"
 echo "=========================================================="
 
 # 保存配置到文件
@@ -259,16 +265,32 @@ echo "配置已保存到服务器: server_config.txt"
 
 # 验证配置
 echo "验证配置..."
-echo "1. 检查Xray状态: systemctl status xray"
-systemctl status xray | head -n 10
+echo "1. 检查Xray监听:"
+ss -tuln | grep $SERVER_PORT
 echo ""
-echo "2. 检查Nginx状态: systemctl status nginx"
-systemctl status nginx | head -n 10
+echo "2. 检查Nginx监听:"
+ss -tuln | grep $PUBLIC_PORT
 echo ""
-echo "3. 测试本地连接: nc -zv 127.0.0.1 $SERVER_PORT"
+echo "3. 测试本地连接:"
 nc -zv 127.0.0.1 $SERVER_PORT
 echo ""
-echo "4. 测试Nginx转发: nc -zv 127.0.0.1 $PUBLIC_PORT"
+echo "4. 测试Nginx转发:"
 nc -zv 127.0.0.1 $PUBLIC_PORT
 echo ""
-echo "如果所有测试都成功，则可以在香港服务器上部署中转节点"
+
+# 最终验证
+echo "最终验证:"
+if ss -tuln | grep -q ":$PUBLIC_PORT"; then
+    echo "✅ Nginx已在$PUBLIC_PORT端口监听"
+else
+    echo "❌ Nginx未在$PUBLIC_PORT端口监听，请检查Nginx配置"
+    echo "查看Nginx错误日志: journalctl -u nginx -b --no-pager"
+fi
+
+# 如果Nginx启动失败，显示错误日志
+if [ "$NGINX_STATUS" != "active" ]; then
+    echo "Nginx服务启动失败，查看日志:"
+    journalctl -u nginx --no-pager -n 20
+else
+    echo "✅ Nginx服务已成功启动"
+fi
