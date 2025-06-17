@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# 香港CN2中转服务器一键部署脚本 (终极修复版)
-# 确保部署后服务正常可用
+# 香港CN2中转服务器一键部署脚本 (Nginx反代版)
+# 使用Nginx进行TCP转发，提高稳定性
 
 echo "=========================================="
-echo " 香港CN2中转服务器部署脚本 - 终极修复版 "
+echo " 香港CN2中转服务器部署脚本 - Nginx反代版 "
 echo "=========================================="
 echo "正在安装必要组件..."
 
@@ -13,16 +13,15 @@ sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list
 sed -i 's|security.debian.org|mirrors.aliyun.com/debian-security|g' /etc/apt/sources.list
 
 apt update
-echo "安装核心依赖包..."
 apt install -y --no-install-recommends \
     curl wget openssl uuid-runtime ca-certificates net-tools \
-    iproute2 iptables unzip jq iptables-persistent netcat-openbsd qrencode
+    iproute2 iptables unzip jq iptables-persistent netcat-openbsd qrencode nginx
 
 # 输入后端服务器信息
 echo ""
 read -p "请输入天翼云服务器IP地址: " BACKEND_IP
-BACKEND_PORT="8443"  # 使用8443端口
-LOCAL_PORT="8443"    # 本地监听8443端口
+BACKEND_PORT="443"   # 天翼云Nginx监听443
+LOCAL_PORT="8443"    # 本地监听8443
 TARGET_DOMAIN="www.qq.com"  # SNI域名
 
 # 获取配置信息
@@ -32,27 +31,24 @@ read -p "请输入天翼云服务器的UUID: " UUID
 read -p "请输入天翼云服务器的Public Key: " PUBLIC_KEY
 read -p "请输入天翼云服务器的Short ID: " SHORT_ID
 
-# 配置NAT转发
-echo ""
-echo "配置端口转发 ($LOCAL_PORT → $BACKEND_IP:$BACKEND_PORT)..."
+# 配置Nginx转发
+echo "配置Nginx转发规则..."
+cat > /etc/nginx/conf.d/forward-proxy.conf <<EOF
+stream {
+    server {
+        listen $LOCAL_PORT;
+        proxy_pass $BACKEND_IP:$BACKEND_PORT;
+        proxy_timeout 600s;
+        proxy_connect_timeout 10s;
+        proxy_protocol on;
+    }
+}
+EOF
 
-# 清除旧规则
-iptables -t nat -F
-iptables -t nat -X
-
-# 添加新规则
-iptables -t nat -A PREROUTING -p tcp --dport $LOCAL_PORT -j DNAT --to-destination $BACKEND_IP:$BACKEND_PORT
-iptables -t nat -A PREROUTING -p udp --dport $LOCAL_PORT -j DNAT --to-destination $BACKEND_IP:$BACKEND_PORT
-iptables -t nat -A POSTROUTING -d $BACKEND_IP -p tcp --dport $BACKEND_PORT -j MASQUERADE
-iptables -t nat -A POSTROUTING -d $BACKEND_IP -p udp --dport $BACKEND_PORT -j MASQUERADE
-
-# 开启内核转发
-echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-sysctl -p >/dev/null 2>&1
-
-# 保存规则
-netfilter-persistent save >/dev/null 2>&1
-netfilter-persistent reload >/dev/null 2>&1
+# 重启Nginx
+echo "重启Nginx服务..."
+systemctl restart nginx
+systemctl enable nginx
 
 # 获取公网IP（香港服务器）
 echo "获取香港服务器公网IP..."
@@ -101,16 +97,16 @@ echo " Short ID: $SHORT_ID"
 echo " SNI: $TARGET_DOMAIN"
 echo ""
 echo "=========================================================="
-echo " 转发规则:"
-iptables -t nat -L -n -v
+echo " Nginx转发状态:"
+systemctl status nginx | head -n 10
 echo ""
 echo " 测试连接: nc -zv $BACKEND_IP $BACKEND_PORT"
-echo " 重启转发: netfilter-persistent reload"
+echo " 重启转发: systemctl restart nginx"
 echo "=========================================================="
 
 # 保存客户端配置到文件
 cat > client_config.txt <<EOF
-香港中转服务器配置:
+香港中转服务器配置 (Nginx转发):
 ------------------------------
 地址: $PUBLIC_IP
 端口: $LOCAL_PORT
@@ -130,7 +126,7 @@ echo "生成二维码配置..."
 cat > client_config.json <<EOF
 {
   "v": "2",
-  "ps": "香港中转节点",
+  "ps": "香港中转节点(Nginx)",
   "add": "$PUBLIC_IP",
   "port": "$LOCAL_PORT",
   "id": "$UUID",
@@ -156,7 +152,7 @@ qrencode -t ANSIUTF8 -l H < client_config.json
 echo ""
 
 # 生成分享链接
-SHARE_LINK="vless://$UUID@$PUBLIC_IP:$LOCAL_PORT?security=reality&encryption=none&pbk=$PUBLIC_KEY&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=$TARGET_DOMAIN&sid=$SHORT_ID#香港中转节点"
+SHARE_LINK="vless://$UUID@$PUBLIC_IP:$LOCAL_PORT?security=reality&encryption=none&pbk=$PUBLIC_KEY&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=$TARGET_DOMAIN&sid=$SHORT_ID#香港中转节点(Nginx)"
 echo "分享链接:"
 echo "$SHARE_LINK"
 echo "=========================================================="
@@ -169,6 +165,11 @@ if command -v nc &> /dev/null; then
         echo "连接测试成功!"
     else
         echo "连接测试失败!"
+        echo "请检查:"
+        echo "1. 天翼云服务器是否运行正常"
+        echo "2. 天翼云安全组是否开放 $BACKEND_PORT 端口"
+        echo "3. 天翼云本地防火墙设置"
+        echo "4. 网络路由是否有问题"
     fi
 else
     echo "警告: nc 命令未安装，无法执行连接测试"
@@ -183,7 +184,8 @@ echo ""
 echo "2. 验证端口连通性: timeout 3 telnet $BACKEND_IP $BACKEND_PORT"
 timeout 3 telnet $BACKEND_IP $BACKEND_PORT
 echo ""
-echo "3. 验证转发规则状态:"
-echo "   net.ipv4.ip_forward = $(sysctl -n net.ipv4.ip_forward)"
-echo "   iptables规则:"
-iptables -t nat -L -n -v
+echo "3. 检查Nginx状态: systemctl status nginx"
+systemctl status nginx | head -n 20
+echo ""
+echo "4. 检查Nginx配置: nginx -t"
+nginx -t
