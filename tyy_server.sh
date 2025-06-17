@@ -36,24 +36,50 @@ MIRRORS=(
     "https://github.com/XTLS/Xray-core/releases/download/v1.8.4/Xray-linux-$ARCH.zip"
     "https://hub.fastgit.xyz/XTLS/Xray-core/releases/download/v1.8.4/Xray-linux-$ARCH.zip"
     "https://ghproxy.com/https://github.com/XTLS/Xray-core/releases/download/v1.8.4/Xray-linux-$ARCH.zip"
+    "https://raw.githubusercontent.com/XTLS/Xray-core/main/release/Xray-linux-$ARCH.zip"
+    "https://cdn.jsdelivr.net/gh/XTLS/Xray-core@main/release/Xray-linux-$ARCH.zip"
+    "https://raw.fastgit.org/XTLS/Xray-core/main/release/Xray-linux-$ARCH.zip"
+    "https://raw.statically.io/XTLS/Xray-core/main/release/Xray-linux-$ARCH.zip"
+    "https://raw.sevencdn.com/XTLS/Xray-core/main/release/Xray-linux-$ARCH.zip"
 )
 
 # 尝试多个镜像下载
 DOWNLOAD_SUCCESS=false
 for mirror in "${MIRRORS[@]}"; do
     echo "尝试从镜像源下载: $mirror"
-    if curl -L -o xray.zip "$mirror" --connect-timeout 30; then
+    if curl -L -o xray.zip "$mirror" --connect-timeout 10 --retry 3 --retry-delay 2 --retry-max-time 30; then
         echo "下载成功!"
         DOWNLOAD_SUCCESS=true
         break
     else
         echo "当前镜像源下载失败，尝试下一个..."
+        sleep 1
     fi
-    sleep 1
 done
 
 if [ "$DOWNLOAD_SUCCESS" = false ]; then
-    echo "错误：无法下载Xray核心，请手动下载并上传到服务器"
+    echo "错误：无法下载Xray核心，请尝试以下方法："
+    echo "1. 手动下载Xray核心："
+    echo "   wget https://github.com/XTLS/Xray-core/releases/download/v1.8.4/Xray-linux-$ARCH.zip"
+    echo "2. 或者使用国内镜像："
+    echo "   wget https://hub.fastgit.xyz/XTLS/Xray-core/releases/download/v1.8.4/Xray-linux-$ARCH.zip"
+    echo "3. 如果以上方法都失败，请访问以下地址手动下载："
+    echo "   https://github.com/XTLS/Xray-core/releases/tag/v1.8.4"
+    echo "   下载后上传到服务器，然后继续运行脚本"
+    exit 1
+fi
+
+# 验证下载的文件
+if [ ! -f xray.zip ]; then
+    echo "错误：下载文件不存在"
+    exit 1
+fi
+
+# 检查文件大小
+FILE_SIZE=$(stat -c%s xray.zip)
+if [ "$FILE_SIZE" -lt 1000000 ]; then
+    echo "错误：下载的文件可能不完整，请重试"
+    rm -f xray.zip
     exit 1
 fi
 
