@@ -1,11 +1,10 @@
 #!/bin/bash
 
-# 天翼云后端服务器一键部署脚本 (最终版)
-# 使用8443端口，确保无错误
-# 保存到：https://raw.githubusercontent.com/backszz/tyy/main/tyy_server_final.sh
+# 天翼云服务器一键部署脚本 (Nginx反代版)
+# 使用Nginx监听443端口，转发到本地的8443
 
 echo "=========================================="
-echo " 天翼云服务器部署脚本 - 最终版 "
+echo " 天翼云服务器部署脚本 - Nginx反代版 "
 echo "=========================================="
 echo "正在安装必要组件..."
 
@@ -16,7 +15,7 @@ sed -i 's|security.debian.org|mirrors.aliyun.com/debian-security|g' /etc/apt/sou
 apt update
 apt install -y --no-install-recommends \
     curl wget openssl uuid-runtime ca-certificates net-tools \
-    iproute2 iptables unzip jq iptables-persistent
+    iproute2 iptables unzip jq iptables-persistent netcat-openbsd nginx
 
 # 下载 Xray 核心 (固定版本 1.8.4)
 echo "下载Xray核心..."
@@ -82,7 +81,8 @@ SHORT_ID=$(openssl rand -hex 8 | head -c 16)
 
 # 配置参数
 TARGET_DOMAIN="www.qq.com"  # 伪装目标网站
-SERVER_PORT="8443"          # 使用8443端口
+SERVER_PORT="8443"          # 本地监听8443端口
+PUBLIC_PORT="443"           # Nginx对外监听443端口
 
 # 创建配置文件和目录
 echo "创建配置文件..."
@@ -131,6 +131,19 @@ mkdir -p /var/log/xray
 touch /var/log/xray/access.log
 touch /var/log/xray/error.log
 
+# 配置Nginx反向代理
+echo "配置Nginx反向代理..."
+cat > /etc/nginx/conf.d/reverse-proxy.conf <<EOF
+stream {
+    server {
+        listen $PUBLIC_PORT;
+        proxy_pass 127.0.0.1:$SERVER_PORT;
+        proxy_timeout 600s;
+        proxy_connect_timeout 10s;
+    }
+}
+EOF
+
 # 优化内核参数
 echo "优化内核参数..."
 cat >> /etc/sysctl.conf <<EOF
@@ -150,21 +163,27 @@ iptables -X
 iptables -P INPUT ACCEPT
 iptables -P FORWARD ACCEPT
 iptables -P OUTPUT ACCEPT
-iptables -A INPUT -p tcp --dport $SERVER_PORT -j ACCEPT
-iptables -A INPUT -p udp --dport $SERVER_PORT -j ACCEPT
+iptables -A INPUT -p tcp --dport $PUBLIC_PORT -j ACCEPT
+iptables -A INPUT -p udp --dport $PUBLIC_PORT -j ACCEPT
 netfilter-persistent save
 
 # 启动服务
-echo "启动Xray服务..."
+echo "启动服务..."
 systemctl daemon-reload
 systemctl enable --now xray >/dev/null 2>&1
+systemctl enable --now nginx >/dev/null 2>&1
 sleep 2
 
 # 检查服务状态
 XRAY_STATUS=$(systemctl is-active xray)
+NGINX_STATUS=$(systemctl is-active nginx)
+
 if [ "$XRAY_STATUS" != "active" ]; then
     echo "Xray服务启动失败，查看日志: journalctl -u xray"
-    exit 1
+fi
+
+if [ "$NGINX_STATUS" != "active" ]; then
+    echo "Nginx服务启动失败，查看日志: journalctl -u nginx"
 fi
 
 # 获取公网IP
@@ -191,10 +210,10 @@ PUBLIC_IP=$(get_public_ip)
 clear
 echo "=========================================================="
 echo "                 天翼云服务器部署完成                     "
-echo "                  使用端口: $SERVER_PORT                     "
+echo "                  Nginx监听端口: $PUBLIC_PORT             "
 echo "=========================================================="
 echo " 服务器IP  : $PUBLIC_IP"
-echo " 端口      : $SERVER_PORT"
+echo " 端口      : $PUBLIC_PORT"
 echo "----------------------------------------------------------"
 echo " UUID      : $UUID"
 echo " Public Key: $PUBLIC_KEY"
@@ -204,7 +223,7 @@ echo "=========================================================="
 echo " 客户端配置:"
 echo ""
 echo " 地址: $PUBLIC_IP"
-echo " 端口: $SERVER_PORT"
+echo " 端口: $PUBLIC_PORT"
 echo " 用户ID: $UUID"
 echo " 流控: xtls-rprx-vision"
 echo " TLS类型: reality"
@@ -216,17 +235,18 @@ echo "=========================================================="
 echo " 防火墙状态:"
 iptables -L -n -v
 echo " 测试本地连接: nc -zv 127.0.0.1 $SERVER_PORT"
-echo " 查看日志: journalctl -u xray -f"
-echo " 重启服务: systemctl restart xray"
-echo " 安全组: 确保开放 $SERVER_PORT 端口 TCP/UDP"
+echo " 测试Nginx连接: nc -zv 127.0.0.1 $PUBLIC_PORT"
+echo " 查看Xray日志: journalctl -u xray -f"
+echo " 查看Nginx日志: journalctl -u nginx -f"
+echo " 安全组: 确保开放 $PUBLIC_PORT 端口 TCP/UDP"
 echo "=========================================================="
 
 # 保存配置到文件
 cat > server_config.txt <<EOF
-天翼云服务器配置:
+天翼云服务器配置 (Nginx反代):
 ------------------------------
 地址: $PUBLIC_IP
-端口: $SERVER_PORT
+端口: $PUBLIC_PORT
 用户ID: $UUID
 流控: xtls-rprx-vision
 TLS类型: reality
@@ -236,3 +256,19 @@ SNI: $TARGET_DOMAIN
 ------------------------------
 EOF
 echo "配置已保存到服务器: server_config.txt"
+
+# 验证配置
+echo "验证配置..."
+echo "1. 检查Xray状态: systemctl status xray"
+systemctl status xray | head -n 10
+echo ""
+echo "2. 检查Nginx状态: systemctl status nginx"
+systemctl status nginx | head -n 10
+echo ""
+echo "3. 测试本地连接: nc -zv 127.0.0.1 $SERVER_PORT"
+nc -zv 127.0.0.1 $SERVER_PORT
+echo ""
+echo "4. 测试Nginx转发: nc -zv 127.0.0.1 $PUBLIC_PORT"
+nc -zv 127.0.0.1 $PUBLIC_PORT
+echo ""
+echo "如果所有测试都成功，则可以在香港服务器上部署中转节点"
