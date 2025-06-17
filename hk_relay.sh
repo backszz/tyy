@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # 香港中转服务器一键部署脚本
-# 监听443端口，转发到天翼云服务器的8433端口
+# 监听8443端口，转发到天翼云服务器的8443端口
 
 echo "=========================================="
-echo " 香港中转服务器部署脚本 - 转发到8433端口 "
+echo " 香港中转服务器部署脚本 - 8443端口 "
 echo "=========================================="
 echo "正在安装必要组件..."
 
@@ -15,12 +15,12 @@ sed -i 's|security.debian.org|mirrors.aliyun.com/debian-security|g' /etc/apt/sou
 apt update
 apt install -y --no-install-recommends \
     curl openssl uuid-runtime ca-certificates net-tools \
-    iproute2 iptables unzip jq ufw
+    iproute2 iptables unzip jq
 
 # 输入后端服务器信息
-read -p "请输入后端服务器IP地址: " BACKEND_IP
-BACKEND_PORT="8433"  # 使用8433端口
-LOCAL_PORT="443"
+read -p "请输入天翼云服务器IP地址: " BACKEND_IP
+BACKEND_PORT="8443"  # 使用8443端口
+LOCAL_PORT="8443"    # 本地监听8443端口
 
 # 配置NAT转发
 echo "配置端口转发 ($LOCAL_PORT → $BACKEND_IP:$BACKEND_PORT)..."
@@ -37,7 +37,7 @@ iptables -t nat -A POSTROUTING -d $BACKEND_IP -p udp --dport $BACKEND_PORT -j MA
 
 # 开启内核转发
 echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-sysctl -p
+sysctl -p >/dev/null 2>&1
 
 # 配置防火墙
 echo "配置防火墙..."
@@ -46,17 +46,18 @@ ufw default deny incoming
 ufw default allow outgoing
 ufw allow $LOCAL_PORT/tcp
 ufw allow $LOCAL_PORT/udp
-echo "y" | ufw enable
+echo "y" | ufw enable >/dev/null 2>&1
 
 # 保存规则
 apt install -y iptables-persistent
-netfilter-persistent save
-netfilter-persistent reload
+netfilter-persistent save >/dev/null 2>&1
+netfilter-persistent reload >/dev/null 2>&1
 
 # 输出部署信息
 clear
 echo "=========================================================="
 echo "                 香港中转服务器部署完成                     "
+echo "                  监听端口: $LOCAL_PORT                     "
 echo "=========================================================="
 echo " 服务器IP  : $(curl -4s ifconfig.co)"
 echo " 监听端口  : $LOCAL_PORT"
@@ -74,8 +75,10 @@ echo " Short ID: [使用天翼云服务器的Short ID]"
 echo " SNI: $TARGET_DOMAIN"
 echo ""
 echo "=========================================================="
-echo " 调试命令:"
-echo " 查看连接: netstat -tuln | grep $LOCAL_PORT"
-echo " 查看转发: iptables -t nat -L -n -v"
-echo " 重启服务: netfilter-persistent reload"
+echo " 防火墙状态: $(ufw status | head -1)"
+echo " 转发规则:"
+iptables -t nat -L -n -v
+echo ""
+echo " 测试连接: nc -zv $BACKEND_IP $BACKEND_PORT"
+echo " 重启转发: netfilter-persistent reload"
 echo "=========================================================="
