@@ -94,7 +94,7 @@ SHORT_ID=$(openssl rand -hex 8 | head -c 16)
 
 # 配置参数
 TARGET_DOMAIN="www.qq.com"  # 伪装目标网站
-SERVER_PORT="8443"          # 本地监听8443端口
+SERVER_PORT="8446"          # Xray监听8446端口
 PUBLIC_PORT="8446"          # Nginx对外监听8446端口
 
 # 创建配置文件和目录
@@ -141,8 +141,7 @@ EOF
 
 # 修复Nginx配置
 echo "修复Nginx配置..."
-# 完全重写Nginx配置文件
-cat > /etc/nginx/nginx.conf <<'EOF'
+cat > /etc/nginx/nginx.conf <<EOF
 user www-data;
 worker_processes auto;
 pid /run/nginx.pid;
@@ -152,14 +151,14 @@ events {
     worker_connections 1024;
 }
 
-# 最重要的修复：正确放置stream块位置
 stream {
     server {
-        listen PUBLIC_PORT;
-        proxy_pass 127.0.0.1:SERVER_PORT;
+        listen $PUBLIC_PORT reuseport;
+        proxy_pass 127.0.0.1:$SERVER_PORT;
         proxy_timeout 600s;
         proxy_connect_timeout 10s;
         proxy_buffer_size 16k;
+        proxy_protocol on;
     }
 }
 
@@ -174,10 +173,6 @@ http {
     include /etc/nginx/sites-enabled/*;
 }
 EOF
-
-# 替换占位符
-sed -i "s/PUBLIC_PORT/$PUBLIC_PORT/g" /etc/nginx/nginx.conf
-sed -i "s/SERVER_PORT/$SERVER_PORT/g" /etc/nginx/nginx.conf
 
 # 优化内核参数
 echo "优化内核参数..."
@@ -259,19 +254,17 @@ echo " Short ID: $SHORT_ID"
 echo " SNI: $TARGET_DOMAIN"
 echo ""
 echo "=========================================================="
-echo " 关键服务状态:"
+echo " 服务状态:"
 echo " Xray状态: $XRAY_STATUS"
 echo " Nginx状态: $NGINX_STATUS"
-echo " 防火墙状态:"
-iptables -L -n -v | head -n 15
-echo " 测试本地连接: nc -zv 127.0.0.1 $SERVER_PORT"
-echo " 测试Nginx连接: nc -zv 127.0.0.1 $PUBLIC_PORT"
-echo " 安全组: 确保开放 $PUBLIC_PORT 端口 TCP"
+echo ""
+echo " 测试连接: nc -zv localhost $PUBLIC_PORT"
+echo " 重启服务: systemctl restart xray nginx"
 echo "=========================================================="
 
-# 保存配置到文件
-cat > server_config.txt <<EOF
-天翼云服务器配置 (Nginx反代):
+# 保存客户端配置到文件
+cat > client_config.txt <<EOF
+天翼云服务器配置:
 ------------------------------
 地址: $PUBLIC_IP
 端口: $PUBLIC_PORT
@@ -283,36 +276,58 @@ Short ID: $SHORT_ID
 SNI: $TARGET_DOMAIN
 ------------------------------
 EOF
-echo "配置已保存到服务器: server_config.txt"
 
-# 验证配置
-echo "验证配置..."
-echo "1. 检查Xray监听:"
-ss -tuln | grep $SERVER_PORT
+echo "客户端配置已保存到: client_config.txt"
+
+# 生成二维码
+echo "生成二维码配置..."
+cat > client_config.json <<EOF
+{
+  "v": "2",
+  "ps": "天翼云节点",
+  "add": "$PUBLIC_IP",
+  "port": "$PUBLIC_PORT",
+  "id": "$UUID",
+  "aid": "0",
+  "scy": "auto",
+  "net": "tcp",
+  "type": "none",
+  "host": "",
+  "path": "",
+  "tls": "reality",
+  "sni": "$TARGET_DOMAIN",
+  "alpn": "",
+  "fp": "chrome",
+  "pbk": "$PUBLIC_KEY",
+  "sid": "$SHORT_ID",
+  "flow": "xtls-rprx-vision"
+}
+EOF
+
 echo ""
-echo "2. 检查Nginx监听:"
-ss -tuln | grep $PUBLIC_PORT
-echo ""
-echo "3. 测试本地连接:"
-nc -zv 127.0.0.1 $SERVER_PORT
-echo ""
-echo "4. 测试Nginx转发:"
-nc -zv 127.0.0.1 $PUBLIC_PORT
+echo "二维码配置:"
+qrencode -t ANSIUTF8 -l H < client_config.json
 echo ""
 
-# 最终验证
-echo "最终验证:"
-if ss -tuln | grep -q ":$PUBLIC_PORT"; then
-    echo "✅ Nginx已在$PUBLIC_PORT端口监听"
-else
-    echo "❌ Nginx未在$PUBLIC_PORT端口监听，请检查Nginx配置"
-    echo "查看Nginx错误日志: journalctl -u nginx -b --no-pager"
-fi
+# 生成分享链接
+SHARE_LINK="vless://$UUID@$PUBLIC_IP:$PUBLIC_PORT?security=reality&encryption=none&pbk=$PUBLIC_KEY&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=$TARGET_DOMAIN&sid=$SHORT_ID#天翼云节点"
+echo "分享链接:"
+echo "$SHARE_LINK"
+echo "=========================================================="
 
-# 如果Nginx启动失败，显示错误日志
-if [ "$NGINX_STATUS" != "active" ]; then
-    echo "Nginx服务启动失败，查看日志:"
-    journalctl -u nginx --no-pager -n 20
-else
-    echo "✅ Nginx服务已成功启动"
-fi
+# 测试服务
+echo "正在测试服务..."
+echo "1. 测试Xray服务:"
+systemctl status xray | head -n 10
+echo ""
+echo "2. 测试Nginx服务:"
+systemctl status nginx | head -n 10
+echo ""
+echo "3. 测试端口监听:"
+netstat -tulpn | grep -E "$PUBLIC_PORT|$SERVER_PORT"
+echo ""
+echo "4. 测试本地连接:"
+nc -zv localhost $PUBLIC_PORT
+echo ""
+echo "5. 检查Nginx配置:"
+nginx -t
