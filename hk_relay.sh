@@ -1,7 +1,6 @@
 #!/bin/bash
 
 # 香港CN2中转服务器一键部署脚本 (Nginx反代版)
-# 使用Nginx进行TCP转发，提高稳定性
 
 echo "=========================================="
 echo " 香港CN2中转服务器部署脚本 - Nginx反代版 "
@@ -15,7 +14,7 @@ sed -i 's|security.debian.org|mirrors.aliyun.com/debian-security|g' /etc/apt/sou
 apt update
 apt install -y --no-install-recommends \
     curl wget openssl uuid-runtime ca-certificates net-tools \
-    iproute2 iptables unzip jq iptables-persistent netcat-openbsd qrencode nginx
+    iproute2 iptables unzip jq iptables-persistent netcat-openbsd qrencode nginx-extras
 
 # 输入后端服务器信息
 echo ""
@@ -34,16 +33,24 @@ read -p "请输入天翼云服务器的Short ID: " SHORT_ID
 # 配置Nginx转发
 echo "配置Nginx转发规则..."
 cat > /etc/nginx/conf.d/forward-proxy.conf <<EOF
+events {
+    worker_connections 1024;
+}
+
 stream {
     server {
-        listen $LOCAL_PORT;
+        listen $LOCAL_PORT reuseport;
         proxy_pass $BACKEND_IP:$BACKEND_PORT;
         proxy_timeout 600s;
         proxy_connect_timeout 10s;
-        proxy_protocol on;
+        proxy_buffer_size 16k;
     }
 }
 EOF
+
+# 确保nginx.conf包含stream配置
+sed -i '/http {/i # 加载stream模块\nstream {' /etc/nginx/nginx.conf
+sed -i '/http {/a }' /etc/nginx/nginx.conf
 
 # 重启Nginx
 echo "重启Nginx服务..."
