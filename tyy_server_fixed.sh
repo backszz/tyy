@@ -1,6 +1,6 @@
 #!/bin/bash
-# 天翼云服务器部署脚本 (修复密钥显示问题)
-# 保存到: https://raw.githubusercontent.com/backszz/tyy/main/tyy_server_fixed.sh
+# 天翼云服务器部署脚本 (修复版本检测问题)
+# 保存到: https://raw.githubusercontent.com/backszz/tyy/main/tyy_server_fixed_v2.sh
 
 echo "正在安装必要组件..."
 # 使用阿里云镜像源加速
@@ -14,7 +14,6 @@ apt install -y --no-install-recommends \
 
 # 手动下载最新版Xray
 echo "手动下载Xray核心..."
-XRAY_VERSION="1.8.4"  # 使用当前稳定版本，可根据需要更新
 
 # 判断系统架构
 ARCH=$(uname -m)
@@ -24,8 +23,25 @@ case $ARCH in
     *) ARCH="64" ;;  # 默认为64位
 esac
 
+# 获取最新版本（添加重试和默认值）
+VER="1.8.4"  # 默认版本
+for i in {1..5}; do
+    API_URL="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
+    VER_RESPONSE=$(curl -sL $API_URL)
+    VER=$(echo "$VER_RESPONSE" | jq -r '.tag_name' | sed 's/^v//')
+    
+    if [ -n "$VER" ] && [ "$VER" != "null" ]; then
+        echo "检测到最新版本: v$VER"
+        break
+    else
+        echo "获取最新版本失败 (尝试 $i/5), 使用默认版本 v1.8.4"
+        VER="1.8.4"
+        sleep 2
+    fi
+done
+
 # 下载Xray
-XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/v$XRAY_VERSION/Xray-linux-$ARCH.zip"
+XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/v$VER/Xray-linux-$ARCH.zip"
 echo "下载Xray: $XRAY_URL"
 
 # 使用curl重试机制
