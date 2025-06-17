@@ -49,9 +49,8 @@ stream {
 EOF
 
 # 确保nginx.conf包含stream配置
-if ! grep -q "stream {" /etc/nginx/nginx.conf; then
-    sed -i '/http {/i # 加载stream模块\nstream {' /etc/nginx/nginx.conf
-    sed -i '/http {/a }' /etc/nginx/nginx.conf
+if ! grep -q "include /etc/nginx/conf.d/*.conf;" /etc/nginx/nginx.conf; then
+    sed -i '/http {/a \\tinclude /etc/nginx/conf.d/*.conf;' /etc/nginx/nginx.conf
 fi
 
 # 重启Nginx
