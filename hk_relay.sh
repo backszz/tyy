@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# 香港CN2中转服务器一键部署脚本 (Nginx反代版)
+# 香港CN2中转服务器一键部署脚本 (8446端口版)
 
 echo "=========================================="
-echo " 香港CN2中转服务器部署脚本 - Nginx反代版 "
+echo " 香港CN2中转服务器部署脚本 - 8446端口版 "
 echo "=========================================="
 echo "正在安装必要组件..."
 
@@ -19,7 +19,7 @@ apt install -y --no-install-recommends \
 # 输入后端服务器信息
 echo ""
 read -p "请输入天翼云服务器IP地址: " BACKEND_IP
-BACKEND_PORT="443"   # 天翼云Nginx监听443
+BACKEND_PORT="8446"   # 天翼云Nginx监听8446端口
 LOCAL_PORT="8443"    # 本地监听8443
 TARGET_DOMAIN="www.qq.com"  # SNI域名
 
@@ -49,8 +49,10 @@ stream {
 EOF
 
 # 确保nginx.conf包含stream配置
-sed -i '/http {/i # 加载stream模块\nstream {' /etc/nginx/nginx.conf
-sed -i '/http {/a }' /etc/nginx/nginx.conf
+if ! grep -q "stream {" /etc/nginx/nginx.conf; then
+    sed -i '/http {/i # 加载stream模块\nstream {' /etc/nginx/nginx.conf
+    sed -i '/http {/a }' /etc/nginx/nginx.conf
+fi
 
 # 重启Nginx
 echo "重启Nginx服务..."
