@@ -1,24 +1,28 @@
 #!/bin/bash
 
-# 天翼云服务器一键部署脚本 (8446端口版)
-# 使用8446端口避免国内443端口限制
+# 天翼云服务器一键部署脚本 (Nginx配置修复版)
+# 完全修复Nginx配置问题
 
 echo "=========================================="
-echo " 天翼云服务器部署脚本 - 8446端口版 "
+echo " 天翼云服务器部署脚本 - Nginx配置修复版 "
 echo "=========================================="
-echo "正在安装必要组件..."
 
-# 使用阿里云镜像源加速
-sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list
-sed -i 's|security.debian.org|mirrors.aliyun.com/debian-security|g' /etc/apt/sources.list
+# 添加APT镜像源
+cat > /etc/apt/sources.list <<EOF
+deb https://mirrors.aliyun.com/debian/ bullseye main non-free contrib
+deb-src https://mirrors.aliyun.com/debian/ bullseye main non-free contrib
+deb https://mirrors.aliyun.com/debian-security/ bullseye-security main
+deb-src https://mirrors.aliyun.com/debian-security/ bullseye-security main
+EOF
 
+echo "更新软件包列表..."
 apt update
-echo "安装Nginx-extras（包含stream模块）..."
+echo "安装必要组件..."
 apt install -y --no-install-recommends \
     curl wget openssl uuid-runtime ca-certificates net-tools \
     iproute2 iptables unzip jq iptables-persistent netcat-openbsd nginx-extras
 
-# 下载 Xray 核心 (固定版本 1.8.4)
+# 下载 Xray 核心 (多镜像源加速)
 echo "下载Xray核心..."
 ARCH=$(uname -m)
 case $ARCH in
@@ -27,20 +31,28 @@ case $ARCH in
     *) ARCH="64" ;;  # 默认为64位
 esac
 
-XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/v1.8.4/Xray-linux-$ARCH.zip"
+# 多个镜像源列表
+MIRRORS=(
+    "https://github.com/XTLS/Xray-core/releases/download/v1.8.4/Xray-linux-$ARCH.zip"
+    "https://hub.fastgit.xyz/XTLS/Xray-core/releases/download/v1.8.4/Xray-linux-$ARCH.zip"
+    "https://ghproxy.com/https://github.com/XTLS/Xray-core/releases/download/v1.8.4/Xray-linux-$ARCH.zip"
+)
 
-for i in {1..5}; do
-    echo "尝试 $i/5 下载..."
-    if curl -L -o xray.zip "$XRAY_URL" --connect-timeout 30 --retry 5; then
+# 尝试多个镜像下载
+DOWNLOAD_SUCCESS=false
+for mirror in "${MIRRORS[@]}"; do
+    echo "尝试从镜像源下载: $mirror"
+    if curl -L -o xray.zip "$mirror" --connect-timeout 30; then
         echo "下载成功!"
+        DOWNLOAD_SUCCESS=true
         break
     else
-        echo "下载失败，等待5秒后重试..."
-        sleep 5
+        echo "当前镜像源下载失败，尝试下一个..."
     fi
+    sleep 1
 done
 
-if [ ! -f "xray.zip" ]; then
+if [ "$DOWNLOAD_SUCCESS" = false ]; then
     echo "错误：无法下载Xray核心，请手动下载并上传到服务器"
     exit 1
 fi
@@ -83,7 +95,7 @@ SHORT_ID=$(openssl rand -hex 8 | head -c 16)
 # 配置参数
 TARGET_DOMAIN="www.qq.com"  # 伪装目标网站
 SERVER_PORT="8443"          # 本地监听8443端口
-PUBLIC_PORT="8446"          # Nginx对外监听8446端口（避开443限制）
+PUBLIC_PORT="8446"          # Nginx对外监听8446端口
 
 # 创建配置文件和目录
 echo "创建配置文件..."
@@ -127,35 +139,45 @@ cat > /usr/local/etc/xray/config.json <<EOF
 }
 EOF
 
-# 创建日志目录
-mkdir -p /var/log/xray
-touch /var/log/xray/access.log
-touch /var/log/xray/error.log
+# 修复Nginx配置
+echo "修复Nginx配置..."
+# 完全重写Nginx配置文件
+cat > /etc/nginx/nginx.conf <<'EOF'
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+include /etc/nginx/modules-enabled/*.conf;
 
-# 配置Nginx反向代理
-echo "配置Nginx反向代理..."
-# 创建专门的反代配置文件
-cat > /etc/nginx/conf.d/xray-proxy.conf <<EOF
 events {
     worker_connections 1024;
 }
 
+# 最重要的修复：正确放置stream块位置
 stream {
     server {
-        listen $PUBLIC_PORT reuseport;
-        proxy_pass 127.0.0.1:$SERVER_PORT;
+        listen PUBLIC_PORT;
+        proxy_pass 127.0.0.1:SERVER_PORT;
         proxy_timeout 600s;
         proxy_connect_timeout 10s;
         proxy_buffer_size 16k;
     }
 }
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    access_log /var/log/nginx/access.log;
+    error_log /var/log/nginx/error.log;
+    sendfile on;
+    keepalive_timeout 65;
+    include /etc/nginx/conf.d/*.conf;
+    include /etc/nginx/sites-enabled/*;
+}
 EOF
 
-# 确保nginx.conf包含stream配置
-if ! grep -q "stream {" /etc/nginx/nginx.conf; then
-    sed -i '/http {/i # 加载stream模块\nstream {' /etc/nginx/nginx.conf
-    sed -i '/http {/a }' /etc/nginx/nginx.conf
-fi
+# 替换占位符
+sed -i "s/PUBLIC_PORT/$PUBLIC_PORT/g" /etc/nginx/nginx.conf
+sed -i "s/SERVER_PORT/$SERVER_PORT/g" /etc/nginx/nginx.conf
 
 # 优化内核参数
 echo "优化内核参数..."
